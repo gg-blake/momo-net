@@ -2,3 +2,5 @@
 __pycache__
 archive
 image.jpg
+.vscode
+mnist_dataset/*

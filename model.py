@@ -4,6 +4,7 @@ import torchvision.transforms as transforms
 import torch.nn as nn
 import random
 import os
+from torchinfo import summary
 
 # Check that MPS is available
 if not torch.backends.mps.is_available():
@@ -20,10 +21,11 @@ if not torch.backends.mps.is_available():
 device = torch.device("mps")
 
 class ConvDownBlock(nn.Module):
-    def __init__(self, in_channels, out_channels, group_size, embedding_size: int):
+    def __init__(self, in_channels: int, out_channels: int, group_size: int, embedding_size: int):
         super().__init__()
         self.in_channels = in_channels
         self.out_channels = out_channels
+        # Feed forward down block contains two convolutional layers, group norm, and a silu activation function
         self.ffwd = nn.Sequential(
             nn.Conv2d(in_channels, out_channels, 3, padding=1, device=device),
             nn.GroupNorm(group_size, out_channels),
@@ -44,7 +46,7 @@ class ConvDownBlock(nn.Module):
         return ffwd
 
 class ConvUpBlock(ConvDownBlock):
-    def __init__(self, in_channels, out_channels, group_size, embedding_size: int):
+    def __init__(self, in_channels: int, out_channels: int, group_size: int, embedding_size: int):
         super().__init__(in_channels, out_channels, group_size, embedding_size)
         self.up_conv = nn.ConvTranspose2d(in_channels, out_channels, 2, 2)
 
@@ -154,18 +156,24 @@ def load_image_grayscale_tensor(path: str):
     return tensor
         
 def load_images_batch(batch_size: int, width: int, height: int):
+    # Load images from dog dataset
     paths = find_all_image_paths(os.path.join(os.getcwd(), "archive/images/Images"))
     batch_img_tensor = []
     
     while len(batch_img_tensor) < batch_size:
         idx = random.randint(0, len(paths))
+        # Convert image to a grayscale tensor
         img_tensor = load_image_grayscale_tensor(paths[idx])
         img_width = img_tensor.shape[2]
         img_height = img_tensor.shape[1]
+        # Include images only of a minimum width and height
         if img_width < width or img_height < height: continue
+        # Crop image width
         if img_width > width:
             diff_x = (img_width - width) // 2
             img_tensor = img_tensor[:, :, diff_x:diff_x + width]
+            
+        # Crop image height
         if img_height > height:
             diff_y = (img_height - height) // 2
             img_tensor = img_tensor[:, diff_y:diff_y + height, :]
@@ -179,6 +187,7 @@ def load_images_batch(batch_size: int, width: int, height: int):
 
 
 if __name__ == "__main__":
-    batch = load_images_batch(batch_size, 512, 512)
-    train(training_iters, batch)
+    model = UNet(group_size, embedding_num, embedding_size)
+    tensor = load_images_batch(1, 572, 572)
+    out = model(tensor, torch.tensor([]))
     
