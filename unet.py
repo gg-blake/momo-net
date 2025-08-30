@@ -42,19 +42,17 @@ class Encoder(nn.Module):
         
     def forward(self, x):
         return self.enc_conv_1(self.enc_conv_0(x))
-        
     
 
-class UNetAutoEncoder(nn.Module):
+class UNet(nn.Module):
     def __init__(self, input_dim: tuple[int, int, int, int]=(1, 1, 512, 512), output_dim: tuple[int, int, int, int]=(1, 2, 512, 512), enc_conv_filters=[64, 128, 256, 512, 1024], dec_conv_filters=[64, 128, 256, 512], strides=[2, 2, 2, 2, 2], kernel_sizes=[3, 3, 3, 3, 3], num_groups: int = 32, layer_num: int = 0):
         super().__init__()
         B, C, H, W = input_dim
-        print(layer_num)
         self.layer_num = layer_num
         if layer_num < len(enc_conv_filters):
             self.enc = Encoder(enc_conv_filters[layer_num], kernel_sizes[layer_num], num_groups, input_dim[1] if layer_num == 0 else enc_conv_filters[layer_num-1])
         if layer_num < len(dec_conv_filters):
-            self.next = UNetAutoEncoder((B, C, H // strides[layer_num], W // strides[layer_num]), output_dim, enc_conv_filters, dec_conv_filters, strides, kernel_sizes, num_groups, layer_num+1)
+            self.next = UNet((B, C, H // strides[layer_num], W // strides[layer_num]), output_dim, enc_conv_filters, dec_conv_filters, strides, kernel_sizes, num_groups, layer_num+1)
             self.dec = Decoder(enc_conv_filters[layer_num], dec_conv_filters[layer_num], kernel_sizes[layer_num], num_groups, input_dim[1] if layer_num == 0 else enc_conv_filters[layer_num], self.next.out_channels)
             self.out_channels = dec_conv_filters[layer_num]
         else:
@@ -75,7 +73,7 @@ class UNetAutoEncoder(nn.Module):
 if __name__ == "__main__":
     tensor = torch.rand((64, 1, 28, 28))
     B, C, H, W = tensor.shape
-    model = UNetAutoEncoder(
+    model = UNet(
         input_dim=(B, C, H, W), 
         output_dim=(B, C, H, W), 
         enc_conv_filters=[64, 128, 256], 

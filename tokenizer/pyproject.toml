@@ -1,0 +1,50 @@
+[build-system]
+requires = ["setuptools", "wheel", "setuptools-rust"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tokenizer"
+version = "0.1.0"
+description = "Fast BPE tokenizer implementation in Rust with Python bindings"
+readme = "README.md"
+requires-python = ">=3.7"
+license = {text = "MIT"}
+authors = [
+    {name = "Your Name", email = "your.email@example.com"},
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.7",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Rust",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Topic :: Text Processing",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=6.0",
+    "pytest-benchmark",
+    "black",
+    "ruff",
+]
+
+[tool.setuptools]
+packages = ["tokenizer"]
+package-dir = {"" = "python"}
+
+[tool.setuptools-rust]
+target = "tokenizer"
+
+[[tool.setuptools-rust.ext-modules]]
+target = "tokenizer.tokenizer"
+path = "Cargo.toml"
+binding = "PyO3"

@@ -31,8 +31,6 @@ def load_idx_labels(filename):
 def load_mnist_data():
     train_images = load_idx_images("mnist_dataset/train-images-idx3-ubyte/train-images-idx3-ubyte")
     train_labels = load_idx_labels("mnist_dataset/train-labels-idx1-ubyte/train-labels-idx1-ubyte")
-    test_images = load_idx_images("mnist_dataset/t10k-images-idx3-ubyte/t10k-images-idx3-ubyte")
-    test_labels = load_idx_labels("mnist_dataset/t10k-labels-idx1-ubyte/t10k-labels-idx1-ubyte")
     
     train_dataset = TensorDataset(train_images.unsqueeze(1), train_labels)  
     # add channel dimension: (N,1,28,28)

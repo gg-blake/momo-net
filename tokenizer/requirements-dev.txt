@@ -1,0 +1,29 @@
+# Development dependencies for momo_tokenizer
+
+# Build system
+maturin>=1.5.0
+setuptools>=65.0.0
+wheel>=0.38.0
+
+# Type checking and stubs
+mypy>=1.0.0
+types-setuptools
+
+# Testing
+pytest>=7.0.0
+pytest-benchmark>=4.0.0
+
+# Code formatting and linting
+black>=23.0.0
+ruff>=0.1.0
+
+# Documentation
+sphinx>=5.0.0
+sphinx-rtd-theme>=1.2.0
+
+# IDE support
+python-lsp-server>=1.7.0
+pylsp-mypy>=0.6.0
+
+# For building with specific Python versions
+setuptools-rust>=1.5.2
