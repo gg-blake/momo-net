@@ -1,88 +1,123 @@
 from torch import nn
 import torch
-from torchinfo import summary
+from attention import SelfAttention, CrossAttention
+import torch.nn.functional as F
 
-class Decoder(nn.Module):
-    def __init__(self, filter_size_enc: int, filter_size_dec: int, kernel_size: int, num_groups: int, out_channels: int, prev_out_channels: int):
-        super().__init__()
-        self.dec_up_conv_0 = nn.ConvTranspose2d(prev_out_channels, filter_size_enc, kernel_size=2, stride=2)
-        self.dec_conv_0 = nn.Sequential(
-            nn.Conv2d(in_channels=filter_size_enc + filter_size_dec, out_channels=filter_size_dec, kernel_size=kernel_size, padding="same"),
-            nn.GroupNorm(num_groups, filter_size_dec),
-            nn.SiLU()
-        )
-        
-        self.dec_conv_1 = nn.Sequential(
-            nn.Conv2d(in_channels=filter_size_dec, out_channels=out_channels, kernel_size=kernel_size, padding="same"),
-        )
-        if out_channels != 1:
-            print(filter_size_dec, out_channels, num_groups)
-            self.dec_conv_1.add_module(f"dec_conv_1_group_norm", nn.GroupNorm(num_groups, out_channels))
-            self.dec_conv_1.add_module(f"dec_conv_1_silu", nn.SiLU())
-        
-    def forward(self, enc, mid):
-        up = self.dec_up_conv_0(mid)
-        cat = torch.cat([enc, up], dim=-3)
-        out = self.dec_conv_1(self.dec_conv_0(cat))
-        return out
-        
-class Encoder(nn.Module):
-    def __init__(self, filter_size_enc: int, kernel_size: int, num_groups: int, in_channels: int):
+class UNetConvBlock(nn.Module):
+    def __init__(self, in_channels: int, out_channels: int, time_embedding_size: int, num_groups: int):
         super().__init__()
         self.enc_conv_0 = nn.Sequential(
-            nn.Conv2d(in_channels=in_channels, out_channels=filter_size_enc, kernel_size=kernel_size, padding="same"),
-            nn.GroupNorm(num_groups, filter_size_enc),
+            nn.Conv2d(in_channels=in_channels, out_channels=out_channels, kernel_size=3, padding="same"),
+            nn.GroupNorm(num_groups, out_channels),
             nn.SiLU()
         )
         self.enc_conv_1 = nn.Sequential(
-            nn.Conv2d(in_channels=filter_size_enc, out_channels=filter_size_enc, kernel_size=kernel_size, padding="same"),
-            nn.GroupNorm(num_groups, filter_size_enc),
+            nn.Conv2d(in_channels=out_channels, out_channels=out_channels, kernel_size=3, padding="same"),
+            nn.GroupNorm(num_groups, out_channels),
             nn.SiLU()
         )
+        self.time_ffwd = nn.Linear(time_embedding_size, out_channels)
         
-    def forward(self, x):
-        return self.enc_conv_1(self.enc_conv_0(x))
-    
+    def forward(self, feature, time):
+        time = F.silu(time)
+        time = self.time_ffwd(time)
+        conv = self.enc_conv_1(self.enc_conv_0(feature))
+        return conv + time.unsqueeze(-1).unsqueeze(-1)
+
+class UNetConvTransposeBlock(nn.Module):
+    def __init__(self, in_channels: int, out_channels: int, time_embedding_size: int, num_groups: int):
+        super().__init__()
+        self.dec_up_conv_0 = nn.Conv2d(in_channels, in_channels, kernel_size=3, padding=1)
+        self.dec_conv_0 = nn.Sequential(
+            nn.Conv2d(in_channels=in_channels * 2, out_channels=out_channels, kernel_size=kernel_size, padding="same"),
+            nn.GroupNorm(num_groups, out_channels),
+            nn.SiLU()
+        )
+        self.dec_conv_1 = nn.Sequential(
+            nn.Conv2d(in_channels=out_channels, out_channels=out_channels, kernel_size=kernel_size, padding="same"),
+            nn.GroupNorm(num_groups, out_channels),
+            nn.SiLU()
+        )
+        self.time_ffwd = nn.Linear(time_embedding_size, out_channels)
+        
+    def forward(self, x, skip_connection, time):
+        time = F.silu(time)
+        time = self.time_ffwd(time)
+        up = F.interpolate(self.dec_up_conv_0(x), scale_factor=2, mode="nearest")
+        cat = torch.cat([skip_connection, up], dim=-3)
+        out = self.dec_conv_1(self.dec_conv_0(cat))
+        return out + time.unsqueeze(-1).unsqueeze(-1)
+
+class UNetAttentionBlock(nn.Module):
+    def __init__(self, channels: int, context_size: int, head_size: int, head_count: int, dropout: float = 0.0, num_groups: int = 32):
+        self.group_norm = nn.GroupNorm(num_groups, channels)
+        self.conv_input = nn.Conv2d(channels, channels, kernel_size=1, padding=0)
+        self.layer_norm_0 = nn.LayerNorm(channels)
+        self.attention_0 = SelfAttention(channels, head_size, head_count, context_size, dropout)
+        self.layer_norm_1 = nn.LayerNorm(channels)
+        self.attention_1 = CrossAttention(channels, context_size, head_size, head_count, dropout)
+        self.layer_norm_2 = nn.LayerNorm(channels)
+        self.linear_geglu_0 = nn.Linear(channels, 4 * channels * 2)
+        self.linear_geglu_1 = nn.Linear(4 * channels, channels)
+        self.conv_output = nn.Conv2d(channels, channels, kernel_size=1, padding=0)
+        
+    def forward(self, x: torch.Tensor, context: torch.Tensor) -> torch.Tensor:
+        B, C, H, W = x.shape
+        residue_0 = x
+        
+        # Group Norm + Convolutional Layer
+        x = self.group_norm(x)
+        x = self.conv_input(x)
+        x = x.view((B, C, H * W))
+        x = x.transpose(-1, -2)
+        residue_1 = x
+        
+        # Layer Norm + Self Attention w/ Residual Connection (short)
+        x = self.layer_norm_0(x)
+        x = residue_1 + self.attention_0(x)
+        residue_1 = x
+        
+        # Layer Norm + Cross Attention w/ Residual Connection (short)
+        x = self.layer_norm_1(x)
+        x = residue_1 + self.attention_1(x, context)
+        residue_1 = x
+        
+        # Layer Norm + Feed Forward w/ Residual (short) and GeGLU Connections
+        x = self.layer_norm_2(x)
+        x, gate = self.linear_geglu_0(x).chunk(2, dim=-1)
+        x = x * F.gelu(gate)
+        x = residue_1 + self.linear_geglu_1(x)
+        x = x.transpose(-1, -2)
+        x = x.view((B, C, H, W))
+        
+        # Convolutional Layer w/ Residual Connection (long)
+        return residue_0 + self.conv_output(x)
 
 class UNet(nn.Module):
-    def __init__(self, input_dim: tuple[int, int, int, int]=(1, 1, 512, 512), output_dim: tuple[int, int, int, int]=(1, 2, 512, 512), enc_conv_filters=[64, 128, 256, 512, 1024], dec_conv_filters=[64, 128, 256, 512], strides=[2, 2, 2, 2, 2], kernel_sizes=[3, 3, 3, 3, 3], num_groups: int = 32, layer_num: int = 0):
+    def __init__(self, in_channels: list[int], out_channels: list[int], context_size: int, time_embedding_size: int, head_size: int, head_count: int, num_groups: int = 32, dropout: float = 0.0, block_num: int = 0):
         super().__init__()
-        B, C, H, W = input_dim
-        self.layer_num = layer_num
-        if layer_num < len(enc_conv_filters):
-            self.enc = Encoder(enc_conv_filters[layer_num], kernel_sizes[layer_num], num_groups, input_dim[1] if layer_num == 0 else enc_conv_filters[layer_num-1])
-        if layer_num < len(dec_conv_filters):
-            self.next = UNet((B, C, H // strides[layer_num], W // strides[layer_num]), output_dim, enc_conv_filters, dec_conv_filters, strides, kernel_sizes, num_groups, layer_num+1)
-            self.dec = Decoder(enc_conv_filters[layer_num], dec_conv_filters[layer_num], kernel_sizes[layer_num], num_groups, input_dim[1] if layer_num == 0 else enc_conv_filters[layer_num], self.next.out_channels)
-            self.out_channels = dec_conv_filters[layer_num]
-        else:
-            self.next = None
-            self.out_channels = enc_conv_filters[layer_num]
+        self.residual_block_0 = UNetConvBlock(in_channels[block_num], out_channels[block_num], time_embedding_size, num_groups=num_groups)
+        self.attention_0 = UNetAttentionBlock(out_channels[block_num], context_size, head_size, head_count, dropout=dropout)
+        
+        if block_num == len(in_channels) - 1:
+            return
+        
+        self.next_unet = UNet(in_channels, out_channels, context_size, time_embedding_size, head_size, head_count, num_groups=num_groups, dropout=dropout, block_num=block_num+1)
+        self.residual_block_1 = UNetConvTransposeBlock(out_channels[block_num], out_channels[block_num], time_embedding_size, num_groups=num_groups)
+        self.attention_1 = UNetAttentionBlock(out_channels[block_num], context_size, head_size, head_count, dropout=dropout)
+        
+    def forward(self, x: torch.Tensor, context: torch.Tensor, time: torch.Tensor) -> torch.Tensor:
+        # Left Block / Skip Connection
+        x = self.residual_block_0(x, time)
+        x = self.attention_0(x, context)
+        if self.next_unet is None:
+            return x
             
-    
-    def forward(self, x):
-        enc = self.enc(x)
-        if self.next is None:
-            return enc
-        
+        # Recursive UNet
         pool = nn.MaxPool2d(2)
-        mid = self.next(pool(enc))
-        out = self.dec(enc, mid)
-        return out
+        next_x = self.next_unet(pool(x))
         
-if __name__ == "__main__":
-    tensor = torch.rand((64, 1, 28, 28))
-    B, C, H, W = tensor.shape
-    model = UNet(
-        input_dim=(B, C, H, W), 
-        output_dim=(B, C, H, W), 
-        enc_conv_filters=[64, 128, 256], 
-        dec_conv_filters=[64, 128], 
-        strides=[2, 2, 2], 
-        kernel_sizes=[3, 3, 3], 
-        num_groups = 4
-    )
-    
-    out = model(tensor)
-    print(out.shape)
-    
+        # Right Block
+        x = self.residual_block_1(next_x, x, time)
+        x = self.attention_1(x, context)
+        return x

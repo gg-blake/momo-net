@@ -2,7 +2,7 @@ from torch import nn
 import torch
 from torchinfo import summary
 
-class Decoder(nn.Module):
+class UNetConvTransposeBlock(nn.Module):
     def __init__(self, filter_size_enc: int, filter_size_dec: int, kernel_size: int, num_groups: int, out_channels: int, prev_out_channels: int):
         super().__init__()
         self.dec_up_conv_0 = nn.ConvTranspose2d(prev_out_channels, filter_size_enc, kernel_size=2, stride=2)
@@ -26,7 +26,7 @@ class Decoder(nn.Module):
         out = self.dec_conv_1(self.dec_conv_0(cat))
         return out
         
-class Encoder(nn.Module):
+class UNetConvBlock(nn.Module):
     def __init__(self, filter_size_enc: int, kernel_size: int, num_groups: int, in_channels: int):
         super().__init__()
         self.enc_conv_0 = nn.Sequential(
@@ -50,10 +50,10 @@ class UNet(nn.Module):
         B, C, H, W = input_dim
         self.layer_num = layer_num
         if layer_num < len(enc_conv_filters):
-            self.enc = Encoder(enc_conv_filters[layer_num], kernel_sizes[layer_num], num_groups, input_dim[1] if layer_num == 0 else enc_conv_filters[layer_num-1])
+            self.enc = UNetConvBlock(enc_conv_filters[layer_num], kernel_sizes[layer_num], num_groups, input_dim[1] if layer_num == 0 else enc_conv_filters[layer_num-1])
         if layer_num < len(dec_conv_filters):
             self.next = UNet((B, C, H // strides[layer_num], W // strides[layer_num]), output_dim, enc_conv_filters, dec_conv_filters, strides, kernel_sizes, num_groups, layer_num+1)
-            self.dec = Decoder(enc_conv_filters[layer_num], dec_conv_filters[layer_num], kernel_sizes[layer_num], num_groups, input_dim[1] if layer_num == 0 else enc_conv_filters[layer_num], self.next.out_channels)
+            self.dec = UNetConvTransposeBlock(enc_conv_filters[layer_num], dec_conv_filters[layer_num], kernel_sizes[layer_num], num_groups, input_dim[1] if layer_num == 0 else enc_conv_filters[layer_num], self.next.out_channels)
             self.out_channels = dec_conv_filters[layer_num]
         else:
             self.next = None
@@ -85,4 +85,3 @@ if __name__ == "__main__":
     
     out = model(tensor)
     print(out.shape)
-    

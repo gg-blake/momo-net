@@ -56,6 +56,9 @@ class VAE_Encoder(nn.Module):
         current_channels = in_channels
         prev_channels = in_channels
         residual_layers = []
+        
+        # Output Image Dimensions = Input Image Dimensions // 2**(n_layers)
+        # Example (n_layers=3, w=512, h=512): Output Height = 512 // 2**3 = 64, Output Width = 512 // 2**3 = 64
         for i in range(n_layers):
             residual_layers = [*residual_layers, 
                 VAE_ResidualBlock(in_channels=prev_channels, out_channels=current_channels),

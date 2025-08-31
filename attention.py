@@ -4,7 +4,7 @@ from mps import get_mps_device
 
 device = get_mps_device()
 
-class AttentionHead(nn.Module):
+class SelfAttentionHead(nn.Module):
     """
     A class that represents a single attention head of the transformer model architecture;
     The attention head is used to calculate the attention scores of each node in a block of tokens;
@@ -27,7 +27,7 @@ class AttentionHead(nn.Module):
     value_weights : nn.Linear
         The linear layer for the value weights
     """
-    def __init__(self, embed_size, head_size, block_size, dropout):
+    def __init__(self, embed_size, head_size, block_size, dropout: float = 0.0, proj_bias: bool = False):
         """
         Parameters
         ----------
@@ -41,11 +41,11 @@ class AttentionHead(nn.Module):
             The rate at which nodes in the network are randomly zeroed out during training to prevent overfitting
         """
         super().__init__()
-        self.embed_size = embed_size
-        self.query_weights = nn.Linear(embed_size, head_size, bias=False, device=device)
-        self.key_weights = nn.Linear(embed_size, head_size, bias=False, device=device)
-        self.value_weights = nn.Linear(embed_size, head_size, bias=False, device=device)
-        self.dropout = nn.Dropout(dropout)
+        self.embed_size = embed_size # NOTE: Typically, head_size is equal to embed_size but isn't necessary
+        self.query_weights = nn.Linear(embed_size, head_size, bias=proj_bias, device=device)
+        self.key_weights = nn.Linear(embed_size, head_size, bias=proj_bias, device=device)
+        self.value_weights = nn.Linear(embed_size, head_size, bias=proj_bias, device=device)
+        self.dropout = nn.Dropout(dropout) # TODO: Use this or remove this
         # We want to apply a mask to the attention scores to prevent the model from cheating during training
         self.register_buffer('tril', torch.tril(torch.ones(block_size, block_size, device=device))) # Lower triangular matrix
 
@@ -80,7 +80,11 @@ class SelfAttention(nn.Module):
     def __init__(self, embed_size: int, head_size: int, head_count: int, block_size: int, dropout: float):
         super().__init__()
         # Multiheaded attention (batched attention calculation)
-        self.heads = nn.ModuleList([AttentionHead(embed_size, head_size // head_count, block_size, dropout) for _ in range(head_count)])
+        self.heads = nn.ModuleList([SelfAttentionHead(embed_size, head_size // head_count, block_size, dropout) for _ in range(head_count)])
+        # Linear projection of outcome of multiheaded attention layer
+        self.proj = nn.Linear(embed_size, embed_size, device=device)
+        # Randomly zeros out some of the data to prevent overfitting in training
+        self.dropout = nn.Dropout(dropout)
         
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -98,3 +102,73 @@ class SelfAttention(nn.Module):
         out = self.dropout(out)
         out = self.proj(out)
         return out
+        
+class CrossAttentionHead(nn.Module):
+    """
+    Single head of cross-attention: Queries come from decoder embeddings,
+    Keys/Values come from encoder embeddings.
+    """
+    def __init__(self, q_size: int, kv_size: int, head_size: int, dropout: float = 0.0, proj_bias: bool = False):
+        super().__init__()
+        self.head_size = head_size
+        self.query_weights = nn.Linear(q_size, head_size, bias=proj_bias, device=device)
+        self.key_weights   = nn.Linear(kv_size, head_size, bias=proj_bias, device=device)
+        self.value_weights = nn.Linear(kv_size, head_size, bias=proj_bias, device=device)
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, queries: torch.Tensor, context: torch.Tensor) -> torch.Tensor:
+        """
+        Parameters
+        ----------
+        queries : torch.Tensor
+            Decoder embeddings [B x T_q x C]
+        context : torch.Tensor
+            Encoder embeddings [B x T_kv x C]
+        """
+        B, T_q, C = queries.shape
+        T_kv = context.shape[1]
+
+        # Linear projections
+        Q = self.query_weights(queries)   # [B, T_q, head_size]
+        K = self.key_weights(context)     # [B, T_kv, head_size]
+        V = self.value_weights(context)   # [B, T_kv, head_size]
+
+        # Attention weights (scaled dot product)
+        wei = Q @ K.transpose(-2, -1) * self.embed_size**-0.5  # [B, T_q, T_kv]
+        wei = torch.softmax(wei, dim=-1)
+        wei = self.dropout(wei)
+
+        # Weighted sum of values
+        out = wei @ V  # [B, T_q, head_size]
+        return out
+
+class CrossAttention(nn.Module):
+    """
+    Multiheaded cross-attention layer:  
+    Queries come from decoder, Keys/Values come from encoder.
+    NOTE: kv_size = block_size
+    """
+    def __init__(self, q_size: int, kv_size: int, head_size: int, head_count: int, dropout: float):
+        super().__init__()
+        self.heads = nn.ModuleList([
+            CrossAttentionHead(q_size, kv_size, head_size // head_count, dropout) 
+            for _ in range(head_count)
+        ])
+        self.proj = nn.Linear(q_size, q_size, device=device)
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, queries: torch.Tensor, context: torch.Tensor) -> torch.Tensor:
+        """
+        Parameters
+        ----------
+        queries : torch.Tensor
+            Decoder embeddings [B x T_q x C]
+        context : torch.Tensor
+            Encoder embeddings [B x T_kv x C]
+        """
+        # Run each head and concatenate results
+        out = torch.cat([head(queries, context) for head in self.heads], dim=-1)
+        out = self.dropout(out)
+        out = self.proj(out)
+        return out
+        
