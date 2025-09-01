@@ -1,39 +1,52 @@
 import torch
 import torch.nn as nn
-from mps import get_mps_device
 from attention import SelfAttention
 
-device = get_mps_device()
-    
 class QuickGELU(nn.Module):
     def forward(self, x):
         return x * torch.sigmoid(1.702 * x)
+
 
 class CLIPEmbedding(nn.Module):
     def __init__(self, vocab_size: int, embed_size: int, token_count: int):
         super().__init__()
         self.token_embedding = nn.Embedding(vocab_size, embed_size)
         self.position_embedding = nn.Parameter(torch.zeros(token_count, embed_size))
-        
+
     def forward(self, tokens):
         x = self.token_embedding(tokens)
         x += self.position_embedding
         return x
 
+
 class CLIP(nn.Module):
-    def __init__(self, head_size: int, block_size: int, dropout: float, head_count: int = 12, vocab_size: int=200019, embed_size: int=768, token_count: int=64, layer_count: int=12):
+    def __init__(
+        self,
+        head_size: int,
+        dropout: float,
+        head_count: int = 12,
+        vocab_size: int = 200019,
+        embed_size: int = 768,
+        token_count: int = 64,
+        layer_count: int = 12,
+    ):
         self.embedding = CLIPEmbedding(vocab_size, embed_size, token_count)
-        self.layers = nn.ModuleList([
-            CLIPLayer(embed_size, head_size, head_count, block_size, dropout) for i in range(layer_count)
-        ])
-        
+        self.layers = nn.ModuleList(
+            [
+                CLIPLayer(embed_size, head_size, head_count, dropout)
+                for i in range(layer_count)
+            ]
+        )
+        self.layernorm = nn.LayerNorm(embed_size)
+
     def forward(self, tokens: torch.Tensor) -> torch.FloatTensor:
         state = self.embedding(tokens)
         for layer in self.layers:
             state = layer(state)
-            
+
         output = self.layernorm(state)
         return output
+
 
 class CLIPLayer(nn.Module):
     """
@@ -58,7 +71,14 @@ class CLIPLayer(nn.Module):
     layer_norm2 : nn.LayerNorm
         The layer normalization layer for the feed forward layer
     """
-    def __init__(self, embed_size: int, head_size: int, head_count: int, block_size: int, dropout: float):
+
+    def __init__(
+        self,
+        embed_size: int,
+        head_size: int,
+        head_count: int,
+        dropout: float,
+    ):
         """
         Parameters
         ----------
@@ -75,20 +95,22 @@ class CLIPLayer(nn.Module):
         """
         super().__init__()
         # Multiheaded attention (batched attention calculation)
-        self.attention = SelfAttention(embed_size, head_size, head_count, block_size, dropout)
+        self.attention = SelfAttention(
+            embed_size, head_size, head_count, dropout
+        )
         # Linear projection of outcome of multiheaded attention layer
-        self.proj = nn.Linear(embed_size, embed_size, device=device)
+        self.proj = nn.Linear(embed_size, embed_size)
         # Randomly zeros out some of the data to prevent overfitting in training
         self.dropout = nn.Dropout(dropout)
         # Simple multilayered perceptron
         self.ffwd = nn.Sequential(
-            nn.Linear(embed_size, 4 * embed_size, device=device),
-            QuickGELU(), # This activation function is necessary for diffusion (normally is ReLU)
-            nn.Linear(4 * embed_size, embed_size, device=device),
-            self.dropout
+            nn.Linear(embed_size, 4 * embed_size),
+            QuickGELU(),  # This activation function is necessary for diffusion (normally is ReLU)
+            nn.Linear(4 * embed_size, embed_size),
+            self.dropout,
         )
-        self.layer_norm1 = nn.LayerNorm(embed_size, device=device)
-        self.layer_norm2 = nn.LayerNorm(embed_size, device=device)
+        self.layer_norm1 = nn.LayerNorm(embed_size)
+        self.layer_norm2 = nn.LayerNorm(embed_size)
 
     def forward(self, x):
         """
